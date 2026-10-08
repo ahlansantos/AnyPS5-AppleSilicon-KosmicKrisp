@@ -10,7 +10,11 @@
 #include "prx/libkernel/KernelErrors.hpp"
 #ifndef _WIN32
 #include <dlfcn.h>
+#ifdef __APPLE__
+#include "prx/libc/include/specifics/linux/ElfTypes.hpp"
+#else
 #include <link.h>
+#endif
 #include <unistd.h>
 #endif
 

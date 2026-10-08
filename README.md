@@ -1,6 +1,8 @@
 # About
 
-Tool for automatic executables porting to Linux and Windows.
+Tool for automatic executables porting to Linux, Windows, and macOS (Apple Silicon).
+
+**macOS Port Status**: This fork ([AnyPS5-AppleSilicon-KosmicKrisp](https://github.com/ahlansantos/AnyPS5-AppleSilicon-KosmicKrisp)) is actively bringing native Apple Silicon support using the **KosmicKrisp** Vulkan driver (Mesa) for accurate AGC/RDNA2 translation, and introducing a Mach-O executable generator in the relinker.
 
 Includes a [relinker](core/relinker) that converts executable to the target system's native format and implementations of [system prx libraries](core/libs/prx) suitable for dynamic linking. No emulation or separate runtime process.
 
