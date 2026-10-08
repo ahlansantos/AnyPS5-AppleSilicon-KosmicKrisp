@@ -8,6 +8,7 @@
 #include <elfpatcher/general/ProgramHeaderLayoutBuilder.hpp>
 #include <elfpatcher/general/SectionHeaderTableBuilder.hpp>
 #include <elfpatcher/windows/WindowsElfPatcher.hpp>
+#include <elfpatcher/macos/MacosMachoPatcher.hpp>
 #include <io/ByteWriter.hpp>
 #include <relinker/parsing/ElfReader.hpp>
 #include <relinker/analysis/ValidationPolicy.hpp>
@@ -105,6 +106,14 @@ int main(const int argc, char* argv[]) {
         std::shared_ptr<Elfpatcher::IElfPatcher> patcher;
         if (args.toWindows) {
             patcher = std::make_shared<Elfpatcher::Windows::WindowsPePatcher>(args.windowsGui, std::filesystem::path(args.inputPath).parent_path() / "sce_sys" / "icon0.png");
+        } else if (args.toMacos || 
+#ifdef __APPLE__
+                   true
+#else
+                   false
+#endif
+                   ) {
+            patcher = std::make_shared<Elfpatcher::Macos::MacosMachoPatcher>();
         } else {
             patcher = std::make_shared<Elfpatcher::Linux::LinuxElfPatcher>(
                 std::make_shared<Elfpatcher::EntryStubBuilder>(),

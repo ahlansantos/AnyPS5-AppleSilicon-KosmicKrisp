@@ -35,6 +35,8 @@ Args ParseArgs(int argc, char* argv[]) {
             args.runPath = argv[++i];
         } else if (arg == "--windows") {
             args.toWindows = true;
+        } else if (arg == "--macos") {
+            args.toMacos = true;
         } else if (arg == "--lazy-binding") {
             args.lazyBinding = true;
         } else if (arg == "--autorun") {
@@ -65,7 +67,7 @@ Args ParseArgs(int argc, char* argv[]) {
 
     if (args.inputPath.empty() || args.outputPath.empty())
         throw std::runtime_error(
-            "Usage: relinker [--windows] [--windows-diagnostics] [--windows-gui] [--skip-syscall-check] [--skip-sce-module] [--exclude-sce-module <file>]... [--to-intel] [unused-filter=0|1|2] [--registry] [--rpath <path>] [--lazy-binding] [--autorun] <input.elf> <output.elf>\n"
+            "Usage: relinker [--windows] [--macos] [--windows-diagnostics] [--windows-gui] [--skip-syscall-check] [--skip-sce-module] [--exclude-sce-module <file>]... [--to-intel] [unused-filter=0|1|2] [--registry] [--rpath <path>] [--lazy-binding] [--autorun] <input.elf> <output.elf>\n"
             "Example: relinker input.elf output.elf"
         );
 
