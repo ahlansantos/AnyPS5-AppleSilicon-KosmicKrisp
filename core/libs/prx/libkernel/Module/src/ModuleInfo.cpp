@@ -173,9 +173,16 @@ int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t address, int flags, M
     return 0;
 #else
     Dl_info symbol{};
+#ifdef __APPLE__
+    // Mach-O: the image base reported by dladdr identifies the image (no link_map on Darwin).
+    if (!dladdr(reinterpret_cast<const void*>(address), &symbol) || symbol.dli_fbase == nullptr)
+        return SCE_KERNEL_ERROR_ESRCH;
+    const void* native = symbol.dli_fbase;
+#else
     link_map* native = nullptr;
     if (!dladdr1(reinterpret_cast<const void*>(address), &symbol, reinterpret_cast<void**>(&native), RTLD_DL_LINKMAP) || !native)
         return SCE_KERNEL_ERROR_ESRCH;
+#endif
     ModuleInfoEx result{};
     result.st_size = sizeof(ModuleInfoEx);
     ImageSearch search{static_cast<std::uintptr_t>(address), &result, false};

@@ -20,11 +20,32 @@ struct dl_phdr_info {
     const char* dlpi_name;
     const Elf64_Phdr* dlpi_phdr;
     std::uint16_t dlpi_phnum;
+#ifdef __APPLE__
+    // glibc extension. Darwin has no TLS module ids, so images report 0.
+    std::uint64_t dlpi_tls_modid = 0;
+#endif
 };
 
+#ifdef __APPLE__
+struct Elf64_Dyn {
+    std::int64_t d_tag;
+    union {
+        std::uint64_t d_val;
+        std::uint64_t d_ptr;
+    } d_un;
+};
+#define ElfW(type) Elf64_##type
+static constexpr std::int64_t DT_NULL = 0;
+static constexpr std::int64_t DT_INIT = 12;
+static constexpr std::int64_t DT_FINI = 13;
+#endif
+
 static constexpr std::uint32_t PT_LOAD = 1;
+static constexpr std::uint32_t PT_DYNAMIC = 2;
+static constexpr std::uint32_t PT_TLS = 7;
 static constexpr std::uint32_t PT_GNU_EH_FRAME = 0x6474e550;
 static constexpr std::uint32_t PF_X = 1;
+static constexpr std::uint32_t PF_R = 4;
 static constexpr std::uint32_t PF_W = 2;
 
 #ifdef __APPLE__

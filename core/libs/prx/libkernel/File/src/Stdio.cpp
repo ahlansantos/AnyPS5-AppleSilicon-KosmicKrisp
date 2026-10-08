@@ -450,6 +450,53 @@ int APS5_VABI sceKernelGetdents(int fd, char* buf, int nbytes) {
 
 #else
 
+#ifdef __APPLE__
+// Darwin has no getdents64. __getdirentries64 returns 64-bit-inode records whose d_seekoff is the
+// directory cookie of each entry, which is what the Linux path reads from d_off.
+extern "C" ssize_t __getdirentries64(int fd, void* buf, size_t bufsize, off_t* basep);
+
+int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* basep) {
+    constexpr std::size_t GuestHeaderBytes = 8;
+    constexpr std::size_t GuestMaxName = 255;
+    if (buf == nullptr) return SceErrorFromErrno(GUEST_EFAULT);
+    if (nbytes <= 0) return SceErrorFromErrno(GUEST_EINVAL);
+    const off_t base = ::lseek(fd, 0, SEEK_CUR);
+    if (base < 0) return SceErrorFromErrno(errno);
+    if (basep != nullptr) *basep = static_cast<int64_t>(base);
+    std::vector<char> host(static_cast<std::size_t>(nbytes) < 4096 ? 4096 : static_cast<std::size_t>(nbytes));
+    off_t next = base;
+    const auto read = ::__getdirentries64(fd, host.data(), host.size(), &next);
+    if (read < 0) return SceErrorFromErrno(errno);
+    std::size_t written = 0;
+    off_t resume = base;
+    for (ssize_t offset = 0; offset < read;) {
+        const auto* entry = reinterpret_cast<const struct dirent*>(host.data() + offset);
+        const auto nameLength = static_cast<std::size_t>(entry->d_namlen);
+        const auto record = (GuestHeaderBytes + nameLength + 1 + 3) & ~std::size_t{3};
+        if (nameLength > GuestMaxName || written + record > static_cast<std::size_t>(nbytes)) {
+            if (::lseek(fd, resume, SEEK_SET) < 0) return SceErrorFromErrno(errno);
+            if (written != 0) return static_cast<int>(written);
+            return nameLength > GuestMaxName ? static_cast<int>(0x80020000u | GUEST_ENAMETOOLONG) : SceErrorFromErrno(GUEST_EINVAL);
+        }
+        char* out = buf + written;
+        std::memset(out, 0, record);
+        const auto fileNumber = static_cast<std::uint32_t>(entry->d_ino);
+        const auto recordLength = static_cast<std::uint16_t>(record);
+        const auto nameBytes = static_cast<std::uint8_t>(nameLength);
+        std::memcpy(out, &fileNumber, sizeof(fileNumber));
+        std::memcpy(out + 4, &recordLength, sizeof(recordLength));
+        out[6] = static_cast<char>(entry->d_type);
+        out[7] = static_cast<char>(nameBytes);
+        std::memcpy(out + GuestHeaderBytes, entry->d_name, nameLength);
+        written += record;
+        offset += entry->d_reclen;
+        // The cookie that resumes after this entry is the next entry's own cookie, or the end cookie.
+        resume = offset < read ? static_cast<off_t>(reinterpret_cast<const struct dirent*>(host.data() + offset)->d_seekoff) : next;
+    }
+    if (::lseek(fd, resume, SEEK_SET) < 0) return SceErrorFromErrno(errno);
+    return static_cast<int>(written);
+}
+#else
 int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* basep) {
     constexpr std::size_t GuestHeaderBytes = 8;
     constexpr std::size_t GuestMaxName = 255;
@@ -489,6 +536,8 @@ int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* bas
     if (::lseek(fd, resume, SEEK_SET) < 0) return SceErrorFromErrno(errno);
     return static_cast<int>(written);
 }
+
+#endif
 
 int APS5_VABI sceKernelGetdents(int fd, char* buf, int nbytes) {
     return sceKernelGetdirentries(fd, buf, nbytes, nullptr);

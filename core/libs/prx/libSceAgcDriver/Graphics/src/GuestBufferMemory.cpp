@@ -1,3 +1,4 @@
+#include "prx/libc/include/AtomicSharedPtr.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "ThreadOwned.hpp"
@@ -14,7 +15,9 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#ifdef __linux__
 #include <linux/udmabuf.h>
+#endif
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -93,7 +96,7 @@ struct GuestBufferMemory::AddressSpace {
 namespace {
 
 struct AddressSpaceCache {
-    std::atomic<std::shared_ptr<const GuestBufferMemory::AddressSpace>> current;
+    AtomicSharedPtr<const GuestBufferMemory::AddressSpace> current;
     std::atomic<std::uint64_t> serials{0};
     // Set by the waiter's drop, cleared by the next publish: the rebuild's reason.
     std::atomic<bool> droppedByWaiter{false};
@@ -224,7 +227,7 @@ const char* createHostPointerImport(const Context& context, HostImport& entry, V
     return bindImport(context, entry, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, &import, pointer.memoryTypeBits, allocated, failure);
 }
 
-#ifndef _WIN32
+#ifdef __linux__
 int udmabufDevice() {
     static const int device = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
     return device;
@@ -260,7 +263,7 @@ const char* createDmaBufImport(const Context& context, HostImport& entry, int fi
 
 const char* createImport(const Context& context, HostImport& entry, VkResult& failure) {
     const char* step = createHostPointerImport(context, entry, failure);
-#ifndef _WIN32
+#ifdef __linux__
     int file = -1;
     std::uint64_t offset = 0;
     if (step != nullptr && context.dmaBufImport && GuestArena::GuestArenaSharedBacking_nid_postfix(static_cast<std::uintptr_t>(entry.base), static_cast<std::size_t>(entry.bytes), &file, &offset)) step = createDmaBufImport(context, entry, file, offset, failure);
@@ -315,6 +318,7 @@ void decideImportWatch(const Context& context, HostImports& state) {
         std::fprintf(stderr, "[write-watch] host imports resolve write protection: %s (%u of %u scratch pages written after a GPU read, %u after the import); imported ranges %s\n", state.unwatchImports ? "yes" : "no", probe.writtenAfterSubmit, probe.pages, probe.writtenAtImport, state.unwatchImports ? "are compared" : "stay watched");
     }
     state.unwatchDmaBufImports = state.unwatchImports;
+#ifdef __linux__
     if (!context.dmaBufImport) return;
     const auto dmaBuf = ProbeDmaBufImportWriteProtection(context);
     if (dmaBuf.failure != nullptr) {
@@ -324,6 +328,7 @@ void decideImportWatch(const Context& context, HostImports& state) {
     }
     state.unwatchDmaBufImports = dmaBuf.writtenAfterSubmit != 0 || dmaBuf.writtenByCpu == 0;
     std::fprintf(stderr, "[write-watch] dma-buf imports keep write protection: %s (%u of %u scratch pages written after a GPU read, %u after the import, %u seen after a CPU store); imported ranges %s\n", state.unwatchDmaBufImports ? "no" : "yes", dmaBuf.writtenAfterSubmit, dmaBuf.pages, dmaBuf.writtenAtImport, dmaBuf.writtenByCpu, state.unwatchDmaBufImports ? "are compared" : "stay watched");
+#endif
 #endif
 }
 
@@ -1251,7 +1256,7 @@ ImportProbe ProbeDmaBufImportWriteProtection(const Context& context) {
     static_cast<void>(context);
     probe.failure = "the Linux write watch";
     return probe;
-#else
+#elif defined(__linux__)
     if (!context.dmaBufImport) {
         probe.failure = "dma-buf import support";
         return probe;
@@ -1289,6 +1294,8 @@ ImportProbe ProbeDmaBufImportWriteProtection(const Context& context) {
     }, probe);
     munmap(mapped, bytes);
     close(file);
+#else
+    probe.failure = "not linux";
     return probe;
 #endif
 }

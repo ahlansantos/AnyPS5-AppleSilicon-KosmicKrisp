@@ -41,6 +41,16 @@ const void* imageContaining(const void* address, bool reference, void*& handle, 
     return module;
 #else
     Dl_info info{};
+#ifdef __APPLE__
+    // Mach-O: dladdr gives the image base and path directly (no link_map on Darwin).
+    if (!dladdr(address, &info) || info.dli_fbase == nullptr)
+        throw std::runtime_error(std::string(caller) + ": address outside every loaded image");
+    if (reference && info.dli_fname && *info.dli_fname) {
+        handle = dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
+        if (!handle) throw std::runtime_error(std::string(caller) + ": cannot reference " + info.dli_fname);
+    }
+    return info.dli_fbase;
+#else
     link_map* image = nullptr;
     if (!dladdr1(address, &info, reinterpret_cast<void**>(&image), RTLD_DL_LINKMAP) || !image)
         throw std::runtime_error(std::string(caller) + ": address outside every loaded image");
@@ -49,6 +59,7 @@ const void* imageContaining(const void* address, bool reference, void*& handle, 
         if (!handle) throw std::runtime_error(std::string(caller) + ": cannot reference " + image->l_name);
     }
     return image;
+#endif
 #endif
 }
 

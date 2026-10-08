@@ -40,12 +40,28 @@ if(MINGW)
     endforeach()
 endif()
 
+
+if(APPLE)
+    macro(add_library target_name)
+        _add_library(${target_name} ${ARGN})
+        get_target_property(type ${target_name} TYPE)
+        if(type STREQUAL "SHARED_LIBRARY")
+            set(ALIAS_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}_aliases.txt)
+            add_custom_command(TARGET ${target_name} PRE_LINK
+                COMMAND python3 ${CMAKE_SOURCE_DIR}/macos_nid_alias.py ${ALIAS_FILE} ${target_name} ${CMAKE_CURRENT_BINARY_DIR}
+                COMMENT "Generating NID aliases for ${target_name}"
+            )
+            target_link_options(${target_name} PRIVATE -Wl,-alias_list,${ALIAS_FILE})
+        endif()
+    endmacro()
+endif()
 set(LIBC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/prx/libc)
 add_library(libc SHARED EXCLUDE_FROM_ALL)
 set(LIBS_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory(${LIBC_DIR} ${CMAKE_CURRENT_BINARY_DIR}/prx/libc)
 target_include_directories(libc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 configure_windows_unwind(libc)
+
 
 set(UNPATCHED_DIR ${CMAKE_CURRENT_BINARY_DIR}/libs/unpatched)
 set(PATCHED_DIR ${CMAKE_CURRENT_BINARY_DIR}/libs)
@@ -64,13 +80,22 @@ set_target_properties(libc PROPERTIES
 set(LIBC_UNPATCHED ${UNPATCHED_DIR}/libc.prx)
 set(LIBC_PATCHED ${PATCHED_DIR}/libc.prx)
 
-add_custom_command(
-        OUTPUT ${LIBC_PATCHED}
-        COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_UNPATCHED} ${LIBC_PATCHED}
-        COMMAND $<TARGET_FILE:nid_patcher> libc ${LIBC_PATCHED}
-        DEPENDS nid_patcher libc ${LIBC_UNPATCHED}
-        COMMENT "Patching NIDs for libc"
-)
+if(APPLE)
+    add_custom_command(
+            OUTPUT ${LIBC_PATCHED}
+            COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_UNPATCHED} ${LIBC_PATCHED}
+            DEPENDS libc ${LIBC_UNPATCHED}
+            COMMENT "Copying NID patched for libc on Apple"
+    )
+else()
+    add_custom_command(
+            OUTPUT ${LIBC_PATCHED}
+            COMMAND ${CMAKE_COMMAND} -E copy ${LIBC_UNPATCHED} ${LIBC_PATCHED}
+            COMMAND $<TARGET_FILE:nid_patcher> libc ${LIBC_PATCHED}
+            DEPENDS nid_patcher libc ${LIBC_UNPATCHED}
+            COMMENT "Patching NIDs for libc"
+    )
+endif()
 
 file(GLOB LIBS_DIRS LIST_DIRECTORIES true ${CMAKE_CURRENT_SOURCE_DIR}/prx/*)
 list(REMOVE_ITEM LIBS_DIRS ${LIBC_DIR})
@@ -116,13 +141,22 @@ foreach(LIB_DIR ${LIBS_DIRS})
         set(UNPATCHED_FILE ${UNPATCHED_DIR}/${LIB_NAME}.prx)
         set(PATCHED_FILE ${PATCHED_DIR}/${LIB_NAME}.prx)
 
-        add_custom_command(
-                OUTPUT ${PATCHED_FILE}
-                COMMAND ${CMAKE_COMMAND} -E copy ${UNPATCHED_FILE} ${PATCHED_FILE}
-                COMMAND $<TARGET_FILE:nid_patcher> ${LIB_NAME} --preserve-exports "${LIBC_UNPATCHED}" "${PATCHED_FILE}"
-                DEPENDS nid_patcher ${LIB_NAME} ${UNPATCHED_FILE} ${LIBC_UNPATCHED}
-                COMMENT "Patching NIDs for ${LIB_NAME}"
-        )
+        if(APPLE)
+            add_custom_command(
+                    OUTPUT ${PATCHED_FILE}
+                    COMMAND ${CMAKE_COMMAND} -E copy ${UNPATCHED_FILE} ${PATCHED_FILE}
+                    DEPENDS ${LIB_NAME} ${UNPATCHED_FILE}
+                    COMMENT "Copying NID patched for ${LIB_NAME} on Apple"
+            )
+        else()
+            add_custom_command(
+                    OUTPUT ${PATCHED_FILE}
+                    COMMAND ${CMAKE_COMMAND} -E copy ${UNPATCHED_FILE} ${PATCHED_FILE}
+                    COMMAND $<TARGET_FILE:nid_patcher> ${LIB_NAME} --preserve-exports "${LIBC_UNPATCHED}" "${PATCHED_FILE}"
+                    DEPENDS nid_patcher ${LIB_NAME} ${UNPATCHED_FILE} ${LIBC_UNPATCHED}
+                    COMMENT "Patching NIDs for ${LIB_NAME}"
+            )
+        endif()
 
         list(APPEND PATCHED_OUTPUTS ${PATCHED_FILE})
     endif()
@@ -208,3 +242,19 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceSaveData.native>")
     endif()
 endif()
+if(APPLE)
+    macro(add_library target_name)
+        _add_library(${target_name} ${ARGN})
+        # Only apply to PRX libraries (we check if it's not ALIAS or INTERFACE or IMPORTED)
+        get_target_property(type ${target_name} TYPE)
+        if(type STREQUAL "SHARED_LIBRARY")
+            set(ALIAS_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}_aliases.txt)
+            add_custom_command(TARGET ${target_name} PRE_LINK
+                COMMAND python3 ${PROJECT_SOURCE_DIR}/macos_nid_alias.py ${ALIAS_FILE} ${target_name} ${CMAKE_CURRENT_BINARY_DIR}
+                COMMENT "Generating NID aliases for ${target_name}"
+            )
+            target_link_options(${target_name} PRIVATE -Wl,-alias_list,${ALIAS_FILE})
+        endif()
+    endmacro()
+endif()
+

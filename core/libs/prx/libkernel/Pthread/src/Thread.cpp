@@ -54,6 +54,11 @@ static bool HostStackLimits(std::uintptr_t* low, std::uintptr_t* high) {
     GetCurrentThreadStackLimits(&lowLimit, &highLimit);
     *low = lowLimit;
     *high = highLimit;
+#elif defined(__APPLE__)
+    // Darwin reports the stack's high end; there is no pthread_getattr_np.
+    const auto self = pthread_self();
+    *high = reinterpret_cast<std::uintptr_t>(pthread_get_stackaddr_np(self));
+    *low = *high - pthread_get_stacksize_np(self);
 #else
     pthread_attr_t attr;
     if (pthread_getattr_np(pthread_self(), &attr) != 0)

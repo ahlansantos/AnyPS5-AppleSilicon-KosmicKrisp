@@ -6,6 +6,11 @@
 #else
 #include <sched.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <pthread.h>
+#include <sys/resource.h>
+#endif
 #endif
 
 #include "SceTypes.hpp"
@@ -158,6 +163,13 @@ int APS5_VABI sceKernelGetCurrentCpu(void) {
         index += count;
     }
     return static_cast<int>(index);
+#elif defined(__APPLE__)
+    // Darwin has no sched_getcpu and never exposes the core a thread runs on. Spread threads over
+    // the online cores by thread id so guests that only use the value as a hint keep working.
+    std::uint64_t threadId = 0;
+    ::pthread_threadid_np(nullptr, &threadId);
+    const long online = ::sysconf(_SC_NPROCESSORS_ONLN);
+    return static_cast<int>(threadId % static_cast<std::uint64_t>(online > 0 ? online : 1));
 #else
     const int cpu = ::sched_getcpu();
     if (cpu < 0)
@@ -254,8 +266,26 @@ int APS5_VABI getrusage_nid_postfix(int who, GuestResourceUsage* usage) {
     usage->ru_nivcsw = 0;
 #else
     struct rusage native{};
+#ifdef __APPLE__
+    if (who == 0) {
+        if (::getrusage(RUSAGE_SELF, &native) != 0)
+            throw std::system_error(errno, std::generic_category(), "getrusage: getrusage failed");
+    } else {
+        // No RUSAGE_THREAD on Darwin: only CPU times are available per thread.
+        thread_basic_info_data_t info{};
+        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+        mach_port_t self = ::mach_thread_self();
+        const kern_return_t status = ::thread_info(self, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count);
+        ::mach_port_deallocate(::mach_task_self(), self);
+        if (status != KERN_SUCCESS)
+            throw std::runtime_error("getrusage: thread_info failed");
+        native.ru_utime = {info.user_time.seconds, info.user_time.microseconds};
+        native.ru_stime = {info.system_time.seconds, info.system_time.microseconds};
+    }
+#else
     if (::getrusage(who == 0 ? RUSAGE_SELF : RUSAGE_THREAD, &native) != 0)
         throw std::system_error(errno, std::generic_category(), "getrusage: getrusage failed");
+#endif
     usage->ru_utime.tv_sec = static_cast<std::int64_t>(native.ru_utime.tv_sec);
     usage->ru_utime.tv_usec = static_cast<std::int64_t>(native.ru_utime.tv_usec);
     usage->ru_stime.tv_sec = static_cast<std::int64_t>(native.ru_stime.tv_sec);

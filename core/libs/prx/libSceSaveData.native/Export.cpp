@@ -140,7 +140,9 @@ SaveDataParam load_param(const std::string& real_path) {
         std::error_code ec;
         const auto written = std::filesystem::last_write_time(real_path, ec);
         if (!ec) {
-            const auto system = std::chrono::clock_cast<std::chrono::system_clock>(written);
+            // libc++ lacks clock_cast: rebase the file clock onto the system clock by their current offset.
+            const auto system = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                written - decltype(written)::clock::now() + std::chrono::system_clock::now());
             param.mtime = std::chrono::duration_cast<std::chrono::seconds>(system.time_since_epoch()).count();
         }
     }

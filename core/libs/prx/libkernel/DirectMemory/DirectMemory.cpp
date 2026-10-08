@@ -17,7 +17,11 @@
 #include <system_error>
 #include <vector>
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -140,7 +144,27 @@ namespace {
 
 constexpr int GuestMapFixedFlag = 0x10;
 
-#if defined(__linux__)
+#if defined(__APPLE__)
+// Darwin has no /proc/self/maps. mach_vm_map with VM_FLAGS_ANYWHERE searches upward from the hint
+// for a free, aligned range, which is exactly "at or above".
+void* MapAtOrAbove(std::uintptr_t start, size_t len, int prot, size_t alignment) {
+    mach_vm_address_t address = start;
+    const kern_return_t status = mach_vm_map(mach_task_self(), &address, len, static_cast<mach_vm_offset_t>(alignment - 1), VM_FLAGS_ANYWHERE, MEMORY_OBJECT_NULL, 0, FALSE, prot, VM_PROT_ALL, VM_INHERIT_COPY);
+    if (status != KERN_SUCCESS) throw std::runtime_error("No free range above the mapping address hint");
+    return reinterpret_cast<void*>(address);
+}
+
+// Darwin has no MAP_FIXED_NOREPLACE: a VM_FLAGS_FIXED allocation without OVERWRITE fails if occupied.
+void* MapFixedNoReplace(void* address, size_t len, int prot) {
+    mach_vm_address_t target = reinterpret_cast<mach_vm_address_t>(address);
+    const kern_return_t status = mach_vm_map(mach_task_self(), &target, len, 0, VM_FLAGS_FIXED, MEMORY_OBJECT_NULL, 0, FALSE, prot, VM_PROT_ALL, VM_INHERIT_COPY);
+    if (status != KERN_SUCCESS) {
+        errno = status == KERN_NO_SPACE ? EEXIST : ENOMEM;
+        return MAP_FAILED;
+    }
+    return address;
+}
+#elif defined(__linux__)
 void* MapAtOrAbove(std::uintptr_t start, size_t len, int prot, size_t alignment) {
     constexpr std::uintptr_t UserLimit = 0x7fff00000000ull;
     for (int attempt = 0; attempt < 8; ++attempt) {
@@ -233,6 +257,15 @@ public:
             std::snprintf(message, sizeof(message), "create direct memory backing of 0x%llx bytes (%llu MiB)", static_cast<unsigned long long>(size), static_cast<unsigned long long>((size + 0xFFFFF) >> 20));
             throw std::system_error(error, std::system_category(), message);
         }
+#elif defined(__APPLE__)
+        // A named Mach memory entry is the Darwin counterpart of a memfd: every mapping of it aliases
+        // the same physical pages.
+        memory_object_size_t size = bytes;
+        const kern_return_t status = mach_make_memory_entry_64(mach_task_self(), &size, 0, MAP_MEM_NAMED_CREATE | VM_PROT_ALL, &entry, MACH_PORT_NULL);
+        if (status != KERN_SUCCESS || size < bytes) {
+            if (status == KERN_SUCCESS) mach_port_deallocate(mach_task_self(), entry);
+            throw std::runtime_error("create direct memory backing");
+        }
 #else
         file = memfd_create("direct memory", MFD_CLOEXEC | MFD_ALLOW_SEALING);
         if (file < 0) throw std::system_error(errno, std::generic_category(), "create direct memory backing");
@@ -258,6 +291,8 @@ public:
     ~PhysicalBacking() {
 #ifdef _WIN32
         CloseHandle(section);
+#elif defined(__APPLE__)
+        mach_port_deallocate(mach_task_self(), entry);
 #else
         ::close(file);
 #endif
@@ -269,6 +304,10 @@ public:
     void Map(std::uintptr_t address, std::size_t bytes, std::uint64_t offset, int protection) const {
 #ifdef _WIN32
         GuestArena::GuestArenaMap_nid_postfix(reinterpret_cast<void*>(address), bytes, section, offset, WinProtFromPosix(protection));
+#elif defined(__APPLE__)
+        mach_vm_address_t target = address;
+        const kern_return_t status = mach_vm_map(mach_task_self(), &target, bytes, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, entry, offset, FALSE, protection, VM_PROT_ALL, VM_INHERIT_NONE);
+        if (status != KERN_SUCCESS) throw std::runtime_error("map direct memory backing");
 #else
         if (::mmap(reinterpret_cast<void*>(address), bytes, protection, MAP_SHARED | MAP_FIXED, file, static_cast<off_t>(offset)) == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "map direct memory backing");
 #endif
@@ -278,6 +317,8 @@ private:
     int memoryType;
 #ifdef _WIN32
     HANDLE section = nullptr;
+#elif defined(__APPLE__)
+    mach_port_t entry = MACH_PORT_NULL;
 #else
     int file = -1;
 #endif
@@ -436,7 +477,7 @@ bool RemapFixedIntoRegistered(GuestAllocations::Mutation& mutation, void* addr, 
 }
 
 void Unmap(void* addr, size_t len) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     if (munmap(addr, len) != 0) throw std::system_error(errno, std::generic_category(), "munmap failed");
     GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(addr, len);
 #else
@@ -490,7 +531,11 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
 #else
         const int placement = MAP_FIXED;
 #endif
+#ifdef __APPLE__
+        void* result = (flags & GuestMapNoOverwrite) != 0 ? MapFixedNoReplace(addr, len, prot) : mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | placement, -1, 0);
+#else
         void* result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | placement, -1, 0);
+#endif
         if (result == MAP_FAILED) {
             // return SCE_KERNEL_ERROR_ENOMEM;
             throw std::system_error(errno, std::generic_category(), "Fixed mmap failed");
@@ -498,7 +543,7 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
         return result;
     }
     if (addr) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         return MapAtOrAbove(reinterpret_cast<std::uintptr_t>(addr), len, prot, alignment);
 #else
         return mmap_aligned(len, prot, alignment, reinterpret_cast<std::uintptr_t>(addr));
@@ -586,7 +631,7 @@ void RecordProtection(const void* addr, size_t len, int prot) {
 
 void* MapAligned(void* addr, size_t len, int prot, int flags, size_t alignment) {
     void* mapped = MapPlaced(addr, len, prot, flags, alignment);
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     GuestWriteWatch::GuestWriteWatchRegister_nid_postfix(mapped, len);
 #endif
     return mapped;
@@ -620,7 +665,7 @@ void UnmapRegistered(GuestAllocations::Mutation& mutation, void* addr, size_t le
         auto* pieceAddress = const_cast<void*>(piece);
         std::lock_guard lock(g_directLock);
         EraseMappings(reinterpret_cast<std::uintptr_t>(piece), reinterpret_cast<std::uintptr_t>(piece) + pieceBytes);
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         Unmap(pieceAddress, pieceBytes);
 #else
         if (KernelArena::Get().Contains(pieceAddress, pieceBytes)) munmap(pieceAddress, pieceBytes);
